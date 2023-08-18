@@ -9,10 +9,10 @@ class Measure:
         self.calcHelper = calcHelper
 
 class Dimension:
-    def __init__(self, label, column, binSize, sortBy, sortAscending = False, topN = None):
+    def __init__(self, label, column, bucketingRule, sortBy, sortAscending = False, topN = None):
         self.label = label
         self.column = column
-        self.binSize = binSize
+        self.bucketingRule = bucketingRule
         self.sortBy = sortBy
         self.sortAscending = sortAscending
         self.topN = topN
@@ -20,20 +20,16 @@ class Dimension:
 class Stratification:
     def __init__(self, loanTape):
         self.loans = loanTape
-        self.measures = {}
-        self.dimensions = {}
+        self.measures = []
+        self.dimensions = []
         self.stratsTable = {}
         self.func_dict = dict()
    
-    def addSorting(self, byLabel, sortAscending = False):
-        self.byLabel = byLabel
-        self.sortAscending = sortAscending
+    def addDimension(self,label, column, bucketingRule, sortBy, sortAscending, topN):
+        self.dimensions.append(Dimension(label, column, bucketingRule, sortBy, sortAscending, topN))
 
-    def addDimension(self, dimensionName,label, column, binSize, sortBy, sortAscending, topN):
-        self.dimensions[dimensionName] = Dimension(label, column, binSize, sortBy, sortAscending, topN)
-
-    def addMeasure(self, meausreName, label, column, calcMethod, calcHelper = None):
-        self.measures[meausreName] = Measure(label, column, calcMethod, calcHelper)
+    def addMeasure(self, label, column, calcMethod, calcHelper = None):
+        self.measures.append(Measure(label, column, calcMethod, calcHelper))
 
     def func_define(self,calc_method, helper = None):
         if calc_method == 'Count':
@@ -69,23 +65,33 @@ class Stratification:
         
         self.loans.loc[:, 'TOTALCOL'] = 'Total'
 
-        for dimensionName, dimensionObj in self.dimensions.items():
+        for dimensionObj in self.dimensions:
             groupByCol = dimensionObj.column
             calcRes = pd.DataFrame()
 
-
             # -calc- ***************** Bucketing Numerical if Applicable *****************
-            if dimensionObj.binSize is not None:
+            if dimensionObj.bucketingRule is not None:                
                 if pd.api.types.is_numeric_dtype(self.loans[dimensionObj.column]):
                     binsCol = dimensionObj.column + "_bins"
                     groupByCol = binsCol
-                    lower = np.percentile(self.loans[dimensionObj.column], 1)
-                    upper = np.percentile(self.loans[dimensionObj.column], 99)
-                    bins = np.arange(lower, upper + dimensionObj.binSize, dimensionObj.binSize)
+
+                    if dimensionObj.bucketingRule.get('lower'):
+                        lower = dimensionObj.bucketingRule['lower']
+                    else:
+                        lower = np.percentile(self.loans[dimensionObj.column], 1)
+                        
+
+                    if dimensionObj.bucketingRule.get('upper'):
+                        upper = dimensionObj.bucketingRule['upper']
+                    else:
+                        upper = np.percentile(self.loans[dimensionObj.column], 99)                    
+
+                    # bins = np.arange(lower, upper + 2 * dimensionObj.bucketingRule['binSize'], dimensionObj.bucketingRule['binSize'])
+                    bins = [-np.inf] + list(np.arange(lower, upper + dimensionObj.bucketingRule['binSize'], dimensionObj.bucketingRule['binSize'])) + [np.inf]
                     self.loans.loc[:, binsCol] = pd.cut(self.loans[dimensionObj.column], bins = bins, include_lowest=True)
 
             # -calc- ***************** Calculate Each Measure *****************
-            for measureName, measureObj in self.measures.items():
+            for measureObj in self.measures:
                 temp = self.loans.groupby(groupByCol)[measureObj.column]\
                     .agg(temp = self.func_define(measureObj.calcMethod, measureObj.calcHelper))\
                         .rename(columns={'temp': measureObj.label})
@@ -116,7 +122,7 @@ class Stratification:
                 if rowCount > dimensionObj.topN:
                     otherRow = pd.DataFrame()
                     self.loans.loc[:, 'OTHERCOL'] = 'Other'
-                    for measureName, measureObj in self.measures.items():
+                    for measureObj in self.measures:
                         temp = self.loans[self.loans[groupByCol].isin(calcRes.index) == False]\
                             .groupby('OTHERCOL')[measureObj.column]\
                                 .agg(temp = self.func_define(measureObj.calcMethod, measureObj.calcHelper))\
@@ -131,31 +137,6 @@ class Stratification:
                 calcRes = pd.concat([calcRes, totalRow], axis=0)
 
 
-            self.stratsTable[dimensionName] = calcRes
+            self.stratsTable[dimensionObj.label] = calcRes
         
         self.loans = self.loans.drop('TOTALCOL', axis=1)
-
-# ********************************** Sample Data of Usage **********************************
-
-# StratificationH = Stratification(pd.read_csv('./Data/loantape.20200131.csv'))
-
-# # Measures
-# StratificationH.addMeasure(meausreName = "LoanCount", label = "LoanCount", column = "ApplicationID", calcMethod = "Count", calcHelper = None)
-# StratificationH.addMeasure(meausreName = "LoanCountPct", label = "LoanCount %", column = "ApplicationID", calcMethod = "Count %", calcHelper = None)
-# StratificationH.addMeasure(meausreName = "OriginalAmtFinanced", label = "Financed", column = "OriginalAmtFinanced", calcMethod = "Sum", calcHelper = None)
-# StratificationH.addMeasure(meausreName = "OriginalAmtFinancedPct", label = "Financed %", column = "OriginalAmtFinanced", calcMethod = "Sum %", calcHelper = None)
-# StratificationH.addMeasure("LTVCore", "WAVGLTV", "LTVCore", "Wt_Avg", 'OriginalAmtFinanced')
-# StratificationH.addMeasure("FICO", "WAVGFICO", "HighFico", "Wt_Avg", 'OriginalAmtFinanced')
-
-# # Dimensions
-# StratificationH.addDimension(dimensionName = "Make", label = "Make", column = "Make", binSize = None, sortBy = "Financed %", sortAscending = False, topN = 5)
-# StratificationH.addDimension(dimensionName = "BookNewUsed", label = "BookNewUsed", column = "BookNewUsed", binSize = None, sortBy = None, sortAscending = False, topN = None)
-# StratificationH.addDimension(dimensionName = "BookTier", label = "BookTier", column = "BookTier", binSize = None, sortBy = "Financed", sortAscending = False, topN = 5)
-# StratificationH.addDimension(dimensionName = "OriginalRate", label = "OriginalRate", column = "OriginalRate", binSize = 0.02, sortBy = None, sortAscending = False, topN = 10)
-# StratificationH.addDimension(dimensionName = "LTVCore", label = "LTVCore", column = "LTVCore", binSize = 0.1, sortBy = None, sortAscending = False, topN = None)
-# StratificationH.addDimension(dimensionName = "HighFico", label = "HighFico", column = "HighFico", binSize = 30, sortBy = None, sortAscending = False, topN = None)
-
-
-
-# StratificationH.generateStrat()
-# print(StratificationH.stratsTable['HighFico'])
