@@ -11,15 +11,68 @@ warnings.filterwarnings('ignore')
 idx = pd.IndexSlice
 
 class RollRateAmortization:
-    def __init__(self, loanTape):
+    def __init__(self, loanTape, TMModels):
         self.statusBucket  = ['Current','EarlyDQ','LateDQ','CO', 'Prepaid']
         self.loanColumns = ['BOPBal','TransitionBal','IntPayment','Default','PrepayPrin', 'ScheduledPrin', 'Recovery', 'Loss', 'PrinCF','TotalCF', 'DQBal', 'EOPBal', 'RemainingTerm']
         
         self.index = pd.MultiIndex.from_product([loanTape['ApplicationID'].unique(), self.statusBucket, self.loanColumns], names=['ApplicationID', 'StatusBucket', 'LoanColumns'])
 
         self.loanTape = loanTape
-        self.loansBatch = []
+        self.extendedLoanTape = self.loanTape.copy()
 
+        self.extendedLoanTapeEnrichment()
+        self.loansBatch = []
+        
+        self.TMModels = TMModels
+
+    def extendedLoanTapeEnrichment(self):
+        bookTier = {}
+        bookTier['Tier-1'] = ["Tier -", "Tier -1", "Tier 0", "Tier 1","Tier 2", "Tier 3"]
+        bookTier['Tier-2'] = ["Tier 4", "Tier 5", "Tier 6", "Tier 7", "Tier 8" "Tier Thin"]
+        bookTier['Tier-3'] = ["Tier 9", "Tier 10"]
+
+        self.extendedLoanTape['BookTierPooling_Tier-2'] = self.extendedLoanTape['BookTier'].apply(lambda x: 1 if x in bookTier['Tier-2'] else 0)
+        self.extendedLoanTape['BookTierPooling_Tier-3'] = self.extendedLoanTape['BookTier'].apply(lambda x: 1 if x in bookTier['Tier-3'] else 0)
+
+        bins, labels = [0, 3, 6, 9, 12], [1, 2, 3, 4]
+        self.extendedLoanTape['remitQtr'] = pd.cut(pd.to_datetime(self.extendedLoanTape['Snapshotdt']).dt.month, bins=bins, labels=labels, right=True)
+        self.extendedLoanTape['remitQtrPooling_remit2H'] = self.extendedLoanTape['remitQtr'].apply(lambda x : 1 if x in [1,2] else 0)
+
+        self.extendedLoanTape['BookNewUsed_Used'] = self.extendedLoanTape['BookNewUsed'].apply(lambda x: 1 if x == 'Used' else 0)
+
+        self.extendedLoanTape['factor_lag1'] = self.extendedLoanTape['UPB'] / self.extendedLoanTape['OriginalAmtFinanced']
+
+        self.extendedLoanTape.loc[:, 'Intercept'] = 1
+
+    def updateExtendedLoanTape(self):
+        self.extendedLoanTape = self.extendedLoanTape[self.extendedLoanTape['ApplicationID'].isin(list(self.loans.index.get_level_values('ApplicationID')))]
+        self.extendedLoanTape = self.extendedLoanTape[
+            list(set(list(self.TMModels['fromCModel'].pvalues.index)+
+                     list(self.TMModels['fromEDModel'].pvalues.index)+
+                     list(self.TMModels['fromLDModel'].pvalues.index)
+                     )
+                 ) + ['ApplicationID']]
+        for field in ['RemainingTerm', 'factor_lag1']:
+            if field == 'factor_lag1':
+                fieldDf = self.workLoans.loc[idx[:,:,'EOPBal'], "value"].reset_index().groupby(['ApplicationID'])[['value']].agg(
+                    value = ('value', lambda x: x.sum())
+                ).rename(columns = {'value': 'EOPBal'}).reset_index()
+                fieldDf = pd.merge(fieldDf, self.loanTape[['ApplicationID', 'OriginalAmtFinanced']], 
+                                   how = 'left', 
+                                   left_on = 'ApplicationID', 
+                                   right_on = 'ApplicationID')
+                fieldDf.loc[:, field] = fieldDf['EOPBal'] / fieldDf['OriginalAmtFinanced']
+            else:
+                fieldDf = self.workLoans.loc[idx[:,:,field], "value"].reset_index().groupby(['ApplicationID'])[['value']].agg(value = ('value', lambda x: x.iloc[0])).rename(columns = {'value': field}).reset_index()
+            
+            self.extendedLoanTape = self.extendedLoanTape.drop([field],axis = 1)
+            self.extendedLoanTape = pd.merge(self.extendedLoanTape,
+                                             fieldDf,
+                                             how = 'left',
+                                             left_on = "ApplicationID",
+                                             right_on = "ApplicationID"
+                                             )
+        
     def runCashflow(self):
         self.setUpLoans()
         self.runLoans()
@@ -37,10 +90,58 @@ class RollRateAmortization:
             [0, 0, 0, 0, 1]
         ]
 
-        transitionMatrix = pd.concat([pd.DataFrame(data, index=self.statusBucket, columns=self.statusBucket)] * len(loanIDList), 
+        dummyTransitionMatrix = pd.concat([pd.DataFrame(data, index=self.statusBucket, columns=self.statusBucket)] * len(loanIDList), 
                                     keys=loanIDList, 
                                     names=['ApplicationID', 'StatusBucket'])
         
+
+        predictionFromC = self.TMModels['fromCModel'].predict(self.extendedLoanTape[list(self.TMModels['fromCModel'].pvalues.index)])
+        predictionFromC.index = loanIDList
+        predictionFromC.columns = self.statusBucket
+        predictionFromC.index.name = 'ApplicationID'
+        predictionFromC.loc[:, 'StatusBucket'] = 'Current'
+        predictionFromC = predictionFromC.set_index(['StatusBucket'], append=True, inplace=False)
+
+        predictionFromED = self.TMModels['fromEDModel'].predict(self.extendedLoanTape[list(self.TMModels['fromEDModel'].pvalues.index)])
+        predictionFromED.index = loanIDList
+        predictionFromED.columns = self.statusBucket
+        predictionFromED.index.name = 'ApplicationID'
+        predictionFromED.loc[:, 'StatusBucket'] = 'EarlyDQ'
+        predictionFromED = predictionFromED.set_index(['StatusBucket'], append=True, inplace=False)
+
+        predictionFromLD = self.TMModels['fromLDModel'].predict(self.extendedLoanTape[list(self.TMModels['fromLDModel'].pvalues.index)])
+        predictionFromLD.index = loanIDList
+        predictionFromLD.columns = self.statusBucket
+        predictionFromLD.index.name = 'ApplicationID'
+        predictionFromLD.loc[:, 'StatusBucket'] = 'LateDQ'
+        predictionFromLD = predictionFromLD.set_index(['StatusBucket'], append=True, inplace=False)
+
+        
+        predictionFromCO = pd.concat([pd.DataFrame([[0,0,0,1,0]], columns=self.statusBucket)] * len(loanIDList),
+                                    keys = loanIDList)
+
+                
+        predictionFromCO.index = pd.MultiIndex.from_arrays(
+            [predictionFromCO.index.get_level_values(0), ['CO'] * len(predictionFromCO)],
+            names=['ApplicationID','StatusBucket'])
+
+
+        predictionFromPrepaid = pd.concat([pd.DataFrame([[0,0,0,0,1]], columns=self.statusBucket)] * len(loanIDList), 
+                                    keys=loanIDList)
+        
+        predictionFromPrepaid.index = pd.MultiIndex.from_arrays(
+            [predictionFromPrepaid.index.get_level_values(0), ['Prepaid'] * len(predictionFromPrepaid)],
+            names=['ApplicationID','StatusBucket'])
+        
+
+        
+        transitionMatrix = pd.concat([predictionFromC,
+                                      predictionFromED,
+                                      predictionFromLD,
+                                      predictionFromCO,
+                                      predictionFromPrepaid
+            ], ignore_index = False)
+
         return transitionMatrix
 
     def getPeriods(self):
@@ -86,6 +187,7 @@ class RollRateAmortization:
         self.loans = self.loans.fillna(0)
 
     def runLoans(self):
+        i = 0
         while self.loans.shape[0] > 0:
             # * run transition matrix modeling. for now, reduced to a dummy one and each loan has the same matrix
             loanTransitionMatrix = self.runTransitionMatrixModel(list(self.loans.index.get_level_values(0).unique()))
@@ -203,6 +305,7 @@ class RollRateAmortization:
             self.loansBatch.append(self.loans.loc[idx[loansListRemainingZeroTerm, :, :], :])
             self.loans = self.loans[~self.loans.index.get_level_values('ApplicationID').isin(loansListRemainingZeroTerm)]
             self.updateLoansFromWorkloans()
+            self.updateExtendedLoanTape()
 
         self.loans = pd.concat(self.loansBatch, axis = 0, ignore_index=False)
 

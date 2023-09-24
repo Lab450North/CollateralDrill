@@ -62,7 +62,7 @@ predictionFromLD = fromLDModel['model'].predict(temp[list(fromLDModel['model'].p
 
 
 def fromCurrentPred(prevDate, nextDate):
-    status = 'Current'
+    status = 'LateDQ'
 
     prevDateLoanTape = loanHist[loanHist['Snapshotdt'] == prevDate]
     prevDateLoanTape = prevDateLoanTape[prevDateLoanTape['LoanStatus2'] == status]
@@ -75,8 +75,9 @@ def fromCurrentPred(prevDate, nextDate):
     realizedProb.columns = ['realized.'+ str(item) for item in realizedProb.columns]
     realizedProb.index = [nextDate]
 
-    predictionFromC = fromCModel['model'].predict(prevDateLoanTape[list(fromCModel['model'].pvalues.index)])
-    predictionProb = pd.merge(predictionFromC,prevDateLoanTape[['UPB']], how = 'left', left_index=True, right_index=True)
+    # predictionFromC = fromCModel['model'].predict(prevDateLoanTape[list(fromCModel['model'].pvalues.index)])
+    predictionFromLD = fromLDModel['model'].predict(prevDateLoanTape[list(fromLDModel['model'].pvalues.index)])
+    predictionProb = pd.merge(predictionFromLD,prevDateLoanTape[['UPB']], how = 'left', left_index=True, right_index=True)
     predictionProb = pd.DataFrame(predictionProb[[0, 1, 2, 3, 4]].multiply(predictionProb["UPB"], axis="index").sum())
     predictionProb.loc[:, 'pred'] = predictionProb[0] /  predictionProb[0].sum()
 
@@ -106,3 +107,5 @@ res = pd.DataFrame(columns = ['realized.0.0',
 
 for prevDate, nextDate in pairwise(loanHist['Snapshotdt'].drop_duplicates().sort_values()):
     res = pd.concat([res, fromCurrentPred(prevDate, nextDate)])
+    
+res.to_csv('./TransitionMatrixModeling/ForecastingResult.csv', index=False)
