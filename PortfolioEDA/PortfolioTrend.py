@@ -79,19 +79,5 @@ class PortfolioTrend:
         
         return temp[['res']].rename(columns = {'res':creditStat})
 
-loanPortfolio = pd.read_csv('./Data/loantape.csv')
-portfolioTrendH = PortfolioTrend(loanPortfolio, colNames = {"date":'Snapshotdt', "loanStatus":'LoanStatus2', "eopBal":'UPB'})
 
-# portfolioTrendH.generateTransitionMatrix()
-# portfolioTrendH.getLatestTransitionMatrix()
 
-# print(portfolioTrendH.getMeasureTrend('Snapshotdt', 'UPB', 'sum', None, 'eopBal'))
-# print(portfolioTrendH.getMeasureTrend('Snapshotdt', 'HighFico', 'wt_avg', 'UPB', 'FICO'))
-# print(portfolioTrendH.getMeasureTrend('Snapshotdt', 'DQBal', 'sum', None, 'DQBal'))
-# print(portfolioTrendH.getMeasureTrend('Snapshotdt', 'OriginalTerm', 'wt_avg', 'UPB', 'OrigTerm'))
-# print(portfolioTrendH.getMeasureTrend('Snapshotdt', 'RemainingTerm', 'wt_avg', 'UPB', 'RemTerm'))
-# print(portfolioTrendH.getMeasureTrend('Snapshotdt', 'CurrentRate', 'wt_avg', 'UPB', 'IntRate'))
-
-# print(portfolioTrendH.portfolioCreditStats('cdr', {'defaultBal':'DefaultBal'}))
-# print(portfolioTrendH.portfolioCreditStats('cpr', {'prepayBal':'PrepayBal'}))
-# print(portfolioTrendH.portfolioCreditStats('dq', {'dqBal':'DQBal'}))
